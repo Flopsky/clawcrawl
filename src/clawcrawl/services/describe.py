@@ -1,20 +1,29 @@
 """Describe images with a multimodal Instructor call."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
+from collections.abc import Awaitable, Callable
 
 import httpx
 from instructor.processing.multimodal import Image
 
 from clawcrawl.config import Settings
 from clawcrawl.llm.client import OPENROUTER_EXTRA
-from clawcrawl.prompts import load_prompt, render_prompt
 from clawcrawl.models import ImageDescription, ImageRef
+from clawcrawl.services.image_filter import filter_describable_refs
+from clawcrawl.services.image_urls import dedupe_image_refs
+from clawcrawl.url_sanitize import sanitize_image_url
+from clawcrawl.prompts import load_prompt, render_prompt
 from clawcrawl.telemetry.langfuse import llm_generation, pipeline_span
 from clawcrawl.telemetry.llm_obs import complete_llm_generation
 
 logger = logging.getLogger(__name__)
+
+OnDescribeStarted = Callable[[int], Awaitable[None]]
+OnDescribeProgress = Callable[[int, int, str, bool], Awaitable[None]]
 
 
 async def _fetch_image(url: str, max_bytes: int, timeout: float) -> None:
@@ -32,6 +41,14 @@ async def _fetch_image(url: str, max_bytes: int, timeout: float) -> None:
     except Exception:
         logger.exception("End _fetch_image (failed) url=%s", url)
         raise
+
+
+def _description_ok(desc: ImageDescription) -> bool:
+    try:
+        payload = json.loads(desc.description)
+        return payload.get("_meta", {}).get("type") != "error"
+    except json.JSONDecodeError:
+        return True
 
 
 async def describe_one(
@@ -102,8 +119,11 @@ async def describe_all(
     timeout: float,
     concurrency: int,
     settings: Settings,
+    on_started: OnDescribeStarted | None = None,
+    on_progress: OnDescribeProgress | None = None,
 ) -> list[ImageDescription]:
     """Describe images with bounded concurrency."""
+    refs = dedupe_image_refs(filter_describable_refs(refs))
     logger.info(
         "Start describe_all count=%d concurrency=%d",
         len(refs),
@@ -138,13 +158,47 @@ async def describe_all(
 
     span = None
     results: list[ImageDescription] = []
+    total = len(refs)
     try:
         with pipeline_span(
             "describe_all",
             settings=settings,
-            input={"count": len(refs), "concurrency": concurrency},
+            input={"count": total, "concurrency": concurrency},
         ) as span:
-            results = await asyncio.gather(*[run(r) for r in refs])
+            if on_started is not None:
+                await on_started(total)
+
+            if on_progress is None:
+                results = await asyncio.gather(*[run(r) for r in refs])
+            else:
+                by_url: dict[str, ImageDescription] = {}
+                tasks = [asyncio.create_task(run(r)) for r in refs]
+                completed = 0
+                for task in asyncio.as_completed(tasks):
+                    desc = await task
+                    completed += 1
+                    key = sanitize_image_url(desc.url) or desc.url
+                    by_url[key] = (
+                        desc
+                        if desc.url == key
+                        else desc.model_copy(update={"url": key})
+                    )
+                    await on_progress(
+                        completed,
+                        total,
+                        key,
+                        _description_ok(desc),
+                    )
+                results = []
+                for r in refs:
+                    key = r.url
+                    if key in by_url:
+                        results.append(by_url[key])
+                    else:
+                        logger.warning(
+                            "describe_all missing result for url=%s", r.url
+                        )
+
             if span is not None:
                 span.update(output={"count": len(results)})
     except Exception:

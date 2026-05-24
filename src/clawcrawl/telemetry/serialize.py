@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 
-def safe_json(value: Any, *, max_str: int = 8000) -> Any:
+def safe_json(value: Any, *, max_str: int = 9000) -> Any:
     if value is None:
         return None
     if isinstance(value, str):

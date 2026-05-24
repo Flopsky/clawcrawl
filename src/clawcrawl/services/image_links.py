@@ -7,6 +7,9 @@ from clawcrawl.config import Settings
 from clawcrawl.llm.client import OPENROUTER_EXTRA
 from clawcrawl.prompts import load_prompt, render_prompt
 from clawcrawl.models import ImageRef, MarkdownImageLinks
+from clawcrawl.services.image_filter import filter_describable_refs
+from clawcrawl.services.image_urls import dedupe_image_refs
+from clawcrawl.url_sanitize import sanitize_image_url
 from clawcrawl.telemetry.langfuse import llm_generation, pipeline_span
 from clawcrawl.telemetry.llm_obs import complete_llm_generation
 
@@ -23,23 +26,15 @@ def _regex_refs(markdown: str) -> list[ImageRef]:
     logger.info("Start _regex_refs")
     refs: list[ImageRef] = []
     for alt, url in _MD_IMG.findall(markdown):
-        refs.append(ImageRef(url=url.strip(), alt=alt or None, source="markdown"))
+        clean = sanitize_image_url(url)
+        if clean:
+            refs.append(ImageRef(url=clean, alt=alt or None, source="markdown"))
     for url in _HTML_IMG.findall(markdown):
-        refs.append(ImageRef(url=url.strip(), source="html"))
+        clean = sanitize_image_url(url)
+        if clean:
+            refs.append(ImageRef(url=clean, source="html"))
     logger.info("End _regex_refs count=%d", len(refs))
     return refs
-
-
-def _dedupe(refs: list[ImageRef]) -> list[ImageRef]:
-    logger.info("Start _dedupe")
-    seen: set[str] = set()
-    out: list[ImageRef] = []
-    for r in refs:
-        if r.url not in seen:
-            seen.add(r.url)
-            out.append(r)
-    logger.info("End _dedupe count=%d", len(out))
-    return out
 
 
 async def extract_image_links(
@@ -59,7 +54,7 @@ async def extract_image_links(
             settings=settings,
             input={"max_images": max_images, "markdown_len": len(markdown)},
         ) as span:
-            hints = _dedupe(_regex_refs(markdown))
+            hints = dedupe_image_refs(_regex_refs(markdown))
             hint_block = (
                 "\n".join(f"- {h.url}" for h in hints[: max_images * 2]) or "(none)"
             )
@@ -78,23 +73,31 @@ async def extract_image_links(
                     ),
                 },
             ]
-            with llm_generation(
-                "extract_image_links.llm",
-                settings=settings,
-                model=settings.text_model,
-                messages=messages,
-            ) as gen:
-                result, raw = await client.create_with_completion(
+            llm_images: list[ImageRef] = []
+            try:
+                with llm_generation(
+                    "extract_image_links.llm",
+                    settings=settings,
+                    model=settings.text_model,
                     messages=messages,
-                    response_model=MarkdownImageLinks,
-                    extra_body=OPENROUTER_EXTRA,
+                ) as gen:
+                    result, raw = await client.create_with_completion(
+                        messages=messages,
+                        response_model=MarkdownImageLinks,
+                        extra_body=OPENROUTER_EXTRA,
+                    )
+                    complete_llm_generation(
+                        gen,
+                        output=result.model_dump(),
+                        raw_response=raw,
+                    )
+                    llm_images = list(result.images)
+            except Exception as exc:
+                logger.warning(
+                    "extract_image_links LLM failed, using regex hints only: %s",
+                    exc,
                 )
-                complete_llm_generation(
-                    gen,
-                    output=result.model_dump(),
-                    raw_response=raw,
-                )
-            merged = _dedupe(list(result.images) + hints)
+            merged = filter_describable_refs(dedupe_image_refs(llm_images + hints))
             out = merged[:max_images]
             if span is not None:
                 span.update(

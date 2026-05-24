@@ -22,7 +22,9 @@ async def test_crawl_delegates_to_pipeline(settings, monkeypatch):
         metadata={},
     )
 
-    async def fake_run(url: str, s: Settings) -> CrawlResponse:
+    async def fake_run(
+        url: str, s: Settings, *, on_event=None
+    ) -> CrawlResponse:
         assert url == "https://example.com"
         assert s is settings
         return expected

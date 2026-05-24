@@ -8,6 +8,7 @@ import logging
 from langfuse import get_client, propagate_attributes
 
 from clawcrawl.config import Settings, get_settings
+from clawcrawl.events import EventCallback
 from clawcrawl.models import CrawlResponse
 from clawcrawl.pipeline import run_crawl
 from clawcrawl.telemetry.langfuse import flush_langfuse, tracing_enabled
@@ -15,7 +16,12 @@ from clawcrawl.telemetry.langfuse import flush_langfuse, tracing_enabled
 logger = logging.getLogger(__name__)
 
 
-async def crawl(url: str, *, settings: Settings | None = None) -> CrawlResponse:
+async def crawl(
+    url: str,
+    *,
+    settings: Settings | None = None,
+    on_event: EventCallback | None = None,
+) -> CrawlResponse:
     """Crawl a URL and return markdown with image descriptions inlined.
 
     Loads settings from the environment and ``.env`` when ``settings`` is omitted.
@@ -32,7 +38,9 @@ async def crawl(url: str, *, settings: Settings | None = None) -> CrawlResponse:
                     name="crawl",
                     input={"url": url},
                 ) as root:
-                    result = await run_crawl(url, settings)
+                    result = await run_crawl(
+                        url, settings, on_event=on_event
+                    )
                     root.update(
                         output={
                             "url": result.url,
@@ -40,7 +48,7 @@ async def crawl(url: str, *, settings: Settings | None = None) -> CrawlResponse:
                         }
                     )
         else:
-            result = await run_crawl(url, settings)
+            result = await run_crawl(url, settings, on_event=on_event)
     finally:
         if tracing_enabled(settings):
             flush_langfuse()

@@ -59,6 +59,14 @@ class Settings(BaseSettings):
         default="https://cloud.langfuse.com",
         validation_alias="LANGFUSE_BASE_URL",
     )
+    cors_origins: str = Field(
+        default="http://localhost:3000",
+        validation_alias="CLAWCRAWL_CORS_ORIGINS",
+    )
+
+    def cors_origin_list(self) -> list[str]:
+        """Parse comma-separated CORS origins."""
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
 
 def sync_langfuse_env(settings: Settings) -> None:
@@ -77,3 +85,20 @@ def get_settings() -> Settings:
     sync_langfuse_env(settings)
     logger.info("End get_settings")
     return settings
+
+
+def resolve_settings(
+    *,
+    text_model: str | None = None,
+    vision_model: str | None = None,
+) -> Settings:
+    """Merge per-request model overrides into environment settings."""
+    base = get_settings()
+    updates: dict[str, str] = {}
+    if text_model:
+        updates["text_model"] = text_model
+    if vision_model:
+        updates["vision_model"] = vision_model
+    if not updates:
+        return base
+    return base.model_copy(update=updates)

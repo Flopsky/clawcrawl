@@ -46,6 +46,7 @@ Settings are read from the process environment and from a `.env` file in the pro
 | `LANGFUSE_PUBLIC_KEY` | Optional; Langfuse public key |
 | `LANGFUSE_BASE_URL` | Langfuse host (default: `https://cloud.langfuse.com`) |
 | `CLAWCRAWL_LANGFUSE_ENABLED` | Enable tracing (default: `true`; set `false` for tests) |
+| `CLAWCRAWL_CORS_ORIGINS` | Comma-separated browser origins (default: `http://localhost:3000`) |
 
 ## Use as a Python library
 
@@ -114,13 +115,31 @@ result = await run_crawl("https://example.com", get_settings())
 The HTTP service is a thin wrapper around `clawcrawl.crawl`:
 
 ```bash
-uvicorn clawcrawl.main:app --reload --app-dir src
+uvicorn clawcrawl.main:app --reload --app-dir src --port 8000
 ```
 
 - `GET /health` — liveness
-- `POST /v1/crawl` — body: `{"url": "https://example.com"}`
+- `GET /v1/models?output_modalities=text` — proxy OpenRouter model list (use `text,image` for vision-capable models)
+- `POST /v1/crawl` — body: `{"url": "https://example.com", "text_model": "...", "vision_model": "..."}` (optional model overrides; blocking JSON response)
+- `POST /v1/crawl/stream` — same body; Server-Sent Events with step-by-step progress and a terminal `crawl_done` or `crawl_error` event
 
 Response includes `markdown`, `images` (structured descriptions), and `metadata` from Firecrawl.
+
+Set `CLAWCRAWL_CORS_ORIGINS` (comma-separated) if the browser calls the API directly instead of through the Next.js dev proxy (default: `http://localhost:3000`).
+
+## Web UI
+
+Paper-style Next.js app in `frontend/`:
+
+```bash
+# Terminal 1 — API on port 8000
+uvicorn clawcrawl.main:app --reload --app-dir src --port 8000
+
+# Terminal 2 — UI on port 3000 (proxies /api/* to the API)
+cd frontend && npm install && npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000), paste a URL, and watch the crawl progress rail while the enriched markdown appears on the sheet. Use the gear icon to pick OpenRouter models for extract and describe steps; use **Copy** on the result sheet to copy the final markdown.
 
 ## Quick test client
 
@@ -131,7 +150,7 @@ pip install httpx
 python easy_test.py "https://example.com"
 ```
 
-Writes `output/<host>.md`. Override API base with `CLAWCRAWL_BASE_URL` (default `http://127.0.0.1:8000`).
+Writes `output/<host>.md`. Override API base with `CLAWCRAWL_BASE_URL` (default `http://127.0.0.1:9000`).
 
 ## Tests
 
@@ -163,6 +182,7 @@ src/clawcrawl/
   llm/             # Instructor + OpenRouter clients
   telemetry/       # Langfuse helpers
 easy_test.py       # POST URL → output/*.md
+frontend/          # Next.js paper UI
 tests/
 ```
 

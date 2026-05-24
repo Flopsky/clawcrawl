@@ -15,7 +15,10 @@ downloads/
 eggs/
 .eggs/
 lib/
+!frontend/src/lib/
 lib64/
+node_modules/
+frontend/.next/
 parts/
 sdist/
 var/
